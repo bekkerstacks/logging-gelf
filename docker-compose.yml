@@ -1,0 +1,89 @@
+version: "3.7"
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-6.7.0}
+    hostname: "{{.Node.Hostname}}-elasticsearch"
+    environment:
+      - discovery.zen.ping.unicast.hosts=elasticsearch
+      - discovery.zen.minimum_master_nodes=1
+      - discovery.type=single-node
+      - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD:-changeme}
+      - xpack.security.enabled=false
+      - xpack.monitoring.collection.enabled=false
+      - xpack.license.self_generated.type=trial
+      - cluster.name=es-cluster
+      - node.name={{.Node.Hostname}}-elasticsearch
+      - network.host=0.0.0.0
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms750m -Xmx750m"
+    networks:
+      - private
+    volumes:
+      - elasticsearch:/usr/share/elasticsearch/data
+    deploy:
+      mode: 'global'
+      endpoint_mode: dnsrr
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-6.7.0}
+    networks:
+      - private
+      - public
+    environment:
+      - SERVER_NAME=kibana.${DOMAIN:-localhost}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_HOST:-http://elasticsearch}:${ELASTICSEARCH_PORT:-9200}
+      - ELASTICSEARCH_USERNAME=${ELASTICSEARCH_USERNAME:-elastic}
+      - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD:-changeme}
+    deploy:
+      mode: replicated
+      replicas: 1
+      labels:
+        - traefik.frontend.rule=Host:kibana.${DOMAIN:-localhost}
+        - traefik.enable=true
+        - traefik.port=5601
+        - traefik.tags=public
+        - traefik.backend=kibana
+        - traefik.docker.network=public
+        - traefik.redirectorservice.frontend.entryPoints=http
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:${ELASTIC_VERSION:-6.7.0}
+    hostname: "{{.Node.Hostname}}-logstash"
+    environment:
+      - XPACK_MONITORING_ELASTICSEARCH_URL=http://elasticsearch:9200
+      - XPACK_MONITORING_ELASTICSEARCH_USERNAME=${ELASTICSEARCH_USERNAME:-elastic}
+      - XPACK_MONITORING_ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD:-changeme}
+    ports:
+      - "12201:12201/udp"
+    networks:
+      - private
+    configs:
+      - source: ls_config
+        target: /usr/share/logstash/pipeline/logstash.conf
+
+  sample_app:
+    image: nginx
+    ports:
+      - 8081:80
+    networks:
+      - private
+    logging:
+      driver: gelf
+      options:
+        gelf-address: udp://localhost:12201
+        tag: production
+
+networks:
+  private:
+    driver: overlay
+    name: private
+  public:
+    external: true
+
+volumes:
+  elasticsearch: {}
+
+configs:
+  ls_config:
+    file: $PWD/logstash/config/logstash.conf
